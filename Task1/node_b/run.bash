@@ -11,7 +11,7 @@ done
 
 python3 peer_node.py \
 	  --name "$NODE" --listen 0.0.0.0 "$APP_PORT" \
-	  --peers "$PEERS_STR" \
+	  --peers $PEERS_STR \
 	  --logger "$LOGGER_HOST" 9999 \
 	  --offset-ms -600 \
 
