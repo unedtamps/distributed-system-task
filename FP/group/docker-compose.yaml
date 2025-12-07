@@ -1,0 +1,63 @@
+services:
+  mysql-node1:
+    image: mysql:8.0
+    container_name: mysql-node1
+    hostname: mysql-node1
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+    command: ["mysqld", "--server-id=1", "--default-authentication-plugin=mysql_native_password"]
+
+    volumes:
+      - ./my.cnf:/etc/mysql/my.cnf
+      - node1_data:/var/lib/mysql
+    networks:
+      - group-net
+    healthcheck:
+      test: "mysqladmin ping -h localhost -u root -prootpassword"
+      interval: 5s
+      retries: 20
+
+  mysql-node2:
+    image: mysql:8.0
+    container_name: mysql-node2
+    hostname: mysql-node2
+    ports:
+      - "3307:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+    command: ["mysqld", "--server-id=2", "--default-authentication-plugin=mysql_native_password"]
+    volumes:
+      - ./my.cnf:/etc/mysql/my.cnf
+      - node2_data:/var/lib/mysql
+    networks:
+      - group-net
+    depends_on:
+      - mysql-node1
+
+  mysql-node3:
+    image: mysql:8.0
+    container_name: mysql-node3
+    hostname: mysql-node3
+    ports:
+      - "3308:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+    command: ["mysqld", "--server-id=3", "--default-authentication-plugin=mysql_native_password"]
+    volumes:
+      - ./my.cnf:/etc/mysql/my.cnf
+      - node3_data:/var/lib/mysql
+    networks:
+      - group-net
+    depends_on:
+      - mysql-node1
+
+networks:
+  group-net:
+    driver: bridge
+
+volumes:
+  node1_data:
+  node2_data:
+  node3_data:
