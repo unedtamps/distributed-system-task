@@ -32,19 +32,13 @@ NODES = [
     },
 ]
 
-GROUP_NAME = "aaaaaaaa-bbbb-cccc-dddd-eeeeffff0000"
-SEEDS = "mysql-node1:33061,mysql-node2:33061,mysql-node3:33061"
-
 
 def run_sql(config, sql):
     try:
         conn = mysql.connector.connect(**config)
         cur = conn.cursor()
         sql = sql.strip().rstrip(";")
-
-        # Disable Binary Log untuk session ini agar tidak menambah GTID (Opsional tapi bagus)
         cur.execute("SET sql_log_bin = 0")
-
         cur.execute(sql)
         conn.commit()
         cur.close()
@@ -65,10 +59,6 @@ def configure_node(node):
     cfg = DB_CONFIG.copy()
     cfg.update({"host": node["host"], "port": node["port"]})
 
-    # 1. Install Plugin (Idempotent)
-    run_sql(cfg, "INSTALL PLUGIN group_replication SONAME 'group_replication.so'")
-
-    # 2. Setup User Replikasi (Akan ter-log di binlog? Kita sudah disable sql_log_bin di fungsi run_sql)
     print("   Creating replication user...")
     run_sql(cfg, "CREATE USER IF NOT EXISTS 'repl_user'@'%' IDENTIFIED BY 'password'")
     run_sql(
@@ -76,46 +66,15 @@ def configure_node(node):
         "GRANT REPLICATION SLAVE, GROUP_REPLICATION_ADMIN ON *.* TO 'repl_user'@'%' WITH GRANT OPTION",
     )
     run_sql(cfg, "FLUSH PRIVILEGES")
-
-    # 3. Setup Channel
     run_sql(cfg, "STOP GROUP_REPLICATION")
-
-    # KITA TAMBAHKAN: SOURCE_SSL=0, GET_SOURCE_PUBLIC_KEY=1
-    # query_recovery = """
-    #     CHANGE REPLICATION SOURCE TO
-    #     SOURCE_USER='repl_user',
-    #     SOURCE_PASSWORD='password',
-    #     SOURCE_SSL=0,
-    #     GET_SOURCE_PUBLIC_KEY=1
-    #     FOR CHANNEL 'group_replication_recovery'
-    # """
-    # run_sql(cfg, query_recovery)
     run_sql(
         cfg,
         f"CHANGE REPLICATION SOURCE TO SOURCE_USER='repl_user', SOURCE_PASSWORD='password' FOR CHANNEL 'group_replication_recovery'",
     )
 
-    # 4. Config Network
-    print("   Forcing Network Config...")
-    run_sql(cfg, f"SET GLOBAL group_replication_group_name='{GROUP_NAME}'")
-    run_sql(cfg, f"SET GLOBAL group_replication_group_seeds='{SEEDS}'")
-    run_sql(
-        cfg,
-        f"SET GLOBAL group_replication_local_address='{node['internal_host']}:33061'",
-    )
-    run_sql(cfg, "SET GLOBAL group_replication_ip_allowlist='0.0.0.0/0'")
-    run_sql(cfg, "SET GLOBAL group_replication_single_primary_mode=ON")
-    run_sql(cfg, "SET GLOBAL group_replication_enforce_update_everywhere_checks=OFF")
-
-    # 5. THE MAGIC FIX: RESET MASTER
-    # Hapus semua GTID history sebelum start.
-    # Node 1 (Bootstrap) sebaiknya jangan di-reset jika dia sudah hidup dan punya data penting.
-    # Tapi karena ini setup awal, reset semua tidak masalah.
     if not node["is_bootstrap"]:
         print("   Reseting Master GTID (Clean Slate)...")
         run_sql(cfg, "RESET MASTER")
-
-    # 6. Start Group
     if node["is_bootstrap"]:
         print("   BOOTSTRAPPING GROUP on Node 1...")
         run_sql(cfg, "SET GLOBAL group_replication_bootstrap_group=ON")
