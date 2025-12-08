@@ -2,6 +2,7 @@ import sys
 import time
 
 import mysql.connector
+from mysql.connector import errorcode, errors
 
 DB_CONFIG = {
     "user": "root",
@@ -18,7 +19,14 @@ NODES = [
 
 def get_connection(node, timeout=1):
     return mysql.connector.connect(
-        **DB_CONFIG, host=node["host"], port=node["port"], connect_timeout=timeout
+        **DB_CONFIG,
+        host=node["host"],
+        port=node["port"],
+        connect_timeout=int(timeout),
+        autocommit=True,
+        connection_timeout=1,
+        use_pure=False,
+        raise_on_warnings=False,
     )
 
 
@@ -28,25 +36,32 @@ def find_initial_primary():
         try:
             conn = get_connection(node)
             cur = conn.cursor(dictionary=True)
+
             cur.execute(
-                "SELECT MEMBER_HOST, MEMBER_ROLE FROM performance_schema.replication_group_members "
-                "WHERE MEMBER_ROLE='PRIMARY' AND MEMBER_STATE='ONLINE'"
+                """
+                SELECT MEMBER_HOST, MEMBER_ROLE
+                FROM performance_schema.replication_group_members
+                WHERE MEMBER_ROLE='PRIMARY' AND MEMBER_STATE='ONLINE'
+            """
             )
             row = cur.fetchone()
-            cur.execute("SELECT @@read_only")
-            is_read_only = cur.fetchone()["@@read_only"]
 
+            cur.execute("SELECT @@read_only AS ro")
+            ro = cur.fetchone()["ro"]
+
+            cur.close()
             conn.close()
 
-            if row and is_read_only == 0:
+            if row and ro == 0:
                 return node
         except:
             continue
+
     return None
 
 
 def check_data_consistency(current_idx):
-    status_output = []
+    out = []
 
     for node in NODES:
         try:
@@ -54,94 +69,104 @@ def check_data_consistency(current_idx):
             cur = conn.cursor()
             cur.execute("SELECT COUNT(*) FROM app_db.failover_bench")
             count = cur.fetchone()[0]
+            cur.close()
             conn.close()
-            sync_status = "OK" if count >= current_idx else "LAGGING"
-            status_output.append(f"{node['name']}: {count} ({sync_status})")
 
-        except mysql.connector.Error:
-            status_output.append(f"{node['name']}: [UNREACHABLE]")
-    print(f"   [SYNC CHECK] | {' | '.join(status_output)}")
+            status = "OK" if count >= current_idx else "LAGGING"
+            out.append(f"{node['name']}: {count} ({status})")
+
+        except:
+            out.append(f"{node['name']}: [UNREACHABLE]")
+
+    print("   [SYNC CHECK] | " + " | ".join(out))
 
 
 def run_continuous_failover_test():
     current_node = find_initial_primary()
-
     if not current_node:
-        print("[FATAL] Cluster Down atau tidak ada Primary.")
+        print("[FATAL] Cluster Down / Tidak ada Primary.")
         sys.exit(1)
 
-    print(f"[INFO] Terhubung ke Primary: {current_node['name']}")
+    print(f"[INFO] Primary awal: {current_node['name']}")
 
-    conn = None
     try:
         conn = get_connection(current_node)
         cur = conn.cursor()
+
         cur.execute("CREATE DATABASE IF NOT EXISTS app_db")
         cur.execute("DROP TABLE IF EXISTS app_db.failover_bench")
         cur.execute(
-            "CREATE TABLE app_db.failover_bench (id INT PRIMARY KEY, ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"
+            """
+            CREATE TABLE app_db.failover_bench (
+                id INT PRIMARY KEY,
+                ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """
         )
-        conn.commit()
+
+        cur.close()
     except Exception as e:
-        print(f"[ERROR] Koneksi awal gagal: {e}")
+        print(f"[ERROR] Setup DB gagal: {e}")
         sys.exit(1)
 
     idx = 1
 
     print("\n--- MULAI PENGUJIAN ---")
-    print(
-        "Petunjuk: Coba 'docker stop' atau 'docker network disconnect' pada salah satu node."
-    )
+    print("Coba docker stop / disconnect salah satu node untuk trigger failover.\n")
 
     while True:
         try:
             cur = conn.cursor()
-            cur.execute(f"INSERT INTO app_db.failover_bench (id) VALUES ({idx})")
-            conn.commit()
+            cur.execute("INSERT INTO app_db.failover_bench (id) VALUES (%s)", (idx,))
+            cur.close()
 
-            print(f"\n[WRITE] Insert ID {idx} ke {current_node['name']} BERHASIL.")
-
+            print(f"[WRITE] ID {idx} OK pada {current_node['name']}")
             check_data_consistency(idx)
 
             idx += 1
-            time.sleep(1)
+            time.sleep(0.7)
 
-        except mysql.connector.Error as err:
-            print(f"\n[FAILOVER] Koneksi terputus ke {current_node['name']}!")
+        except (errors.OperationalError, errors.InterfaceError) as err:
+            print(f"\n[FAILOVER] Lost connection ke {current_node['name']}!")
+            print(f"[ERR] {err}")
+
             failover_start = time.time()
+            conn.close()
 
             new_conn = None
 
             while new_conn is None:
                 for node in NODES:
                     try:
-                        temp_conn = get_connection(node)
-                        temp_cur = temp_conn.cursor()
-                        temp_cur.execute(
-                            f"INSERT INTO app_db.failover_bench (id) VALUES ({idx})"
+                        tmp = get_connection(node, timeout=1)
+                        cur = tmp.cursor()
+
+                        cur.execute(
+                            "INSERT INTO app_db.failover_bench (id) VALUES (%s)",
+                            (idx,),
                         )
-                        temp_conn.commit()
+                        cur.close()
 
                         failover_end = time.time()
-                        new_conn = temp_conn
+                        new_conn = tmp
                         current_node = node
 
-                        print(f"[RECOVERED] Failover Selesai.")
-                        print(f"Primary Baru: {current_node['name']}")
+                        print("\n[RECOVERED] Failover selesai.")
+                        print(f"Primary baru: {node['name']}")
                         print(f"Downtime: {failover_end - failover_start:.4f} detik")
 
-                        conn = new_conn
-
                         check_data_consistency(idx)
-
                         idx += 1
                         break
+
                     except:
                         pass
 
                 if new_conn is None:
                     print(".", end="", flush=True)
-                    time.sleep(0.5)
+                    time.sleep(0.4)
+
+            conn = new_conn
 
 
 if __name__ == "__main__":
