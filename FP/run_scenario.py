@@ -59,6 +59,7 @@ def setup_primary_async():
 
     print("Starting containers...")
     subprocess.run(["docker", "compose", "up", "-d"], capture_output=True, cwd="primary-async")
+    time.sleep(5)
 
     print("Setup replication...")
     subprocess.run([sys.executable, "primary-async/setup_primary-async.py"])
@@ -72,6 +73,10 @@ def setup_group_rep():
 
     print("Starting containers...")
     subprocess.run(["docker", "compose", "up", "-d"], capture_output=True, cwd="group-rep")
+    time.sleep(5)
+
+    print("Setup replication...")
+    subprocess.run([sys.executable, "group-rep/setup_group.py"])
 
 def run_all_primary_async():
     print("\nJalankan semua Primary-Async tests...")
@@ -86,7 +91,6 @@ def run_all_primary_async():
         run_test(test, cwd="primary-async")
 
         if i < len(tests):
-            setup_primary_async()
             print("\nWait ...")
             time.sleep(5)
 
@@ -103,7 +107,6 @@ def run_all_group_rep():
         run_test(test, cwd="group-rep")
 
         if i < len(tests):
-            setup_group_rep()
             print("\nWait ...")
             time.sleep(5)
 
