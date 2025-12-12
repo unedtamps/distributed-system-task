@@ -48,11 +48,6 @@
     ```bash
     python3 controller.py start node1
     ```
-- Join node1 to the group
-
-    ```bash
-    python3 controller.py join node1
-    ```
 5. Run Scenario 3
 
     ```bash

@@ -128,7 +128,7 @@ def run_scenario():
         "-uroot",
         "-prootpassword",
         "-e",
-        "INSERT INTO test_db.split_test VALUES (199, 'Illegal Data');",
+        "INSERT INTO test_db.split_test VALUES (1, 'Illegal Data');",
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)

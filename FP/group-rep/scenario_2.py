@@ -25,7 +25,6 @@ def get_connection(node, timeout=1):
         connect_timeout=int(timeout),
         autocommit=True,
         connection_timeout=1,
-        use_pure=False,
         raise_on_warnings=False,
     )
 

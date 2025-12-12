@@ -43,6 +43,21 @@ def get_db_connection(node_key):
     return mysql.connector.connect(**cfg)
 
 
+def wait_for_mysql(node_key, retries=30, delay=1):
+    print(f"Menunggu MySQL pada {node_key} siap...", end="", flush=True)
+    for _ in range(retries):
+        try:
+            conn = get_db_connection(node_key)
+            conn.close()
+            print(" OK.")
+            return True
+        except mysql.connector.Error:
+            print(".", end="", flush=True)
+            time.sleep(delay)
+    print(" Gagal.")
+    return False
+
+
 def check_status():
     success = False
     for key, node in NODES.items():
@@ -76,24 +91,12 @@ def check_status():
             continue
 
     if not success:
-        print("No online nodes found or Cluster is down.")
-
-
-def start_node(node_key):
-    node = NODES[node_key]
-    print(f"Starting container {node['container']}...")
-    subprocess.run(["docker", "start", node["container"]])
-
-
-def stop_node(node_key):
-    node = NODES[node_key]
-    print(f"Stopping container {node['container']}...")
-    subprocess.run(["docker", "stop", node["container"]])
+        print("Tidak ada node yang aktif atau Cluster down.")
 
 
 def connect_group(node_key):
     node = NODES[node_key]
-    print(f"Configuring and Starting Group Replication on {node_key}...")
+    print(f"Mengonfigurasi Group Replication pada {node_key}...")
 
     try:
         conn = get_db_connection(node_key)
@@ -121,29 +124,35 @@ def connect_group(node_key):
         cur.execute("SET GLOBAL group_replication_single_primary_mode=ON")
         cur.execute("SET GLOBAL group_replication_enforce_update_everywhere_checks=OFF")
 
+        print(f"Menjalankan START GROUP_REPLICATION pada {node_key}...")
         cur.execute("START GROUP_REPLICATION")
-        print("Success.")
+        print("Berhasil bergabung ke cluster.")
         conn.close()
     except Exception as e:
-        print(f"Failed: {e}")
+        print(f"Gagal mengaktifkan replikasi: {e}")
 
 
-def disconnect_group(node_key):
-    print(f"Stopping Group Replication on {node_key}...")
-    try:
-        conn = get_db_connection(node_key)
-        conn.autocommit = True
-        cur = conn.cursor()
-        cur.execute("STOP GROUP_REPLICATION")
-        print("Success.")
-        conn.close()
-    except Exception as e:
-        print(f"Failed: {e}")
+def start_node_and_join(node_key):
+    node = NODES[node_key]
+
+    print(f"Memulai container {node['container']}...")
+    subprocess.run(["docker", "start", node["container"]])
+
+    if wait_for_mysql(node_key):
+        connect_group(node_key)
+    else:
+        print("MySQL tidak merespons, proses join dibatalkan.")
+
+
+def stop_node_and_leave(node_key):
+    node = NODES[node_key]
+    print(f"Menghentikan container {node['container']}...")
+    subprocess.run(["docker", "stop", node["container"]])
 
 
 def net_disconnect(node_key):
     node = NODES[node_key]
-    print(f"Disconnecting {node['container']} from docker network...")
+    print(f"Memutus koneksi network {node['container']}...")
     subprocess.run(
         ["docker", "network", "disconnect", DOCKER_NETWORK_NAME, node["container"]]
     )
@@ -151,7 +160,7 @@ def net_disconnect(node_key):
 
 def net_connect(node_key):
     node = NODES[node_key]
-    print(f"Connecting {node['container']} to docker network...")
+    print(f"Menyambungkan network {node['container']}...")
     subprocess.run(
         ["docker", "network", "connect", DOCKER_NETWORK_NAME, node["container"]]
     )
@@ -160,7 +169,7 @@ def net_connect(node_key):
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python controller.py <action> [node]")
-        print("Actions: status, start, stop, join, leave, net_cut, net_join")
+        print("Actions: status, start, stop, net_cut, net_join")
         sys.exit(1)
 
     action = sys.argv[1].lower()
@@ -169,22 +178,18 @@ if __name__ == "__main__":
         check_status()
     else:
         if len(sys.argv) < 3:
-            print("Error: Target node required for this action (node1, node2, node3)")
+            print("Error: Target node required (node1, node2, node3)")
             sys.exit(1)
 
         target = sys.argv[2].lower()
         if target not in NODES:
-            print("Error: Unknown node")
+            print("Error: Node tidak dikenal")
             sys.exit(1)
 
         if action == "start":
-            start_node(target)
+            start_node_and_join(target)
         elif action == "stop":
-            stop_node(target)
-        elif action == "join":
-            connect_group(target)
-        elif action == "leave":
-            disconnect_group(target)
+            stop_node_and_leave(target)
         elif action == "net_cut":
             net_disconnect(target)
         elif action == "net_join":
