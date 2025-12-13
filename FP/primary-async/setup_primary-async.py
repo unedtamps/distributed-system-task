@@ -83,8 +83,8 @@ def setup_replica(replica_config, replica_name):
 
 
 if __name__ == "__main__":
-    print("Pastikan Docker Compose sudah UP. start 2 seconds ...")
-    time.sleep(2)
+    print("Pastikan Docker Compose sudah UP. start 20 seconds ...")
+    time.sleep(20)
     setup_primary()
     setup_replica(REPLICA1_CONFIG, "Replica 1")
     setup_replica(REPLICA2_CONFIG, "Replica 2")
