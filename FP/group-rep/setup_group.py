@@ -2,10 +2,12 @@ import time
 
 import mysql.connector
 
+GROUP_NAME = "aaaaaaaa-bbbb-cccc-dddd-eeeeffff0000"
+SEEDS = "mysql-node1:33061,mysql-node2:33061,mysql-node3:33061"
+
 DB_CONFIG = {
     "user": "root",
     "password": "rootpassword",
-    "auth_plugin": "mysql_native_password",
 }
 
 NODES = [
@@ -35,7 +37,7 @@ NODES = [
 
 def run_sql(config, sql):
     try:
-        conn = mysql.connector.connect(**config)
+        conn = mysql.connector.connect(**config, connection_timeout=5)
         cur = conn.cursor()
         sql = sql.strip().rstrip(";")
         cur.execute("SET sql_log_bin = 0")
@@ -67,6 +69,13 @@ def configure_node(node):
     )
     run_sql(cfg, "FLUSH PRIVILEGES")
     run_sql(cfg, "STOP GROUP_REPLICATION")
+    run_sql(cfg, "INSTALL PLUGIN group_replication SONAME 'group_replication.so'")
+    run_sql(cfg, f"SET GLOBAL group_replication_group_name='{GROUP_NAME}'")
+    run_sql(cfg, f"SET GLOBAL group_replication_group_seeds='{SEEDS}'")
+    run_sql(cfg, f"SET GLOBAL group_replication_local_address='{node['internal_host']}:33061'")
+    run_sql(cfg, "SET GLOBAL group_replication_ip_allowlist='0.0.0.0/0'")
+    run_sql(cfg, "SET GLOBAL group_replication_single_primary_mode=ON")
+    run_sql(cfg, "SET GLOBAL group_replication_enforce_update_everywhere_checks=OFF")
     run_sql(
         cfg,
         f"CHANGE REPLICATION SOURCE TO SOURCE_USER='repl_user', SOURCE_PASSWORD='password' FOR CHANNEL 'group_replication_recovery'",

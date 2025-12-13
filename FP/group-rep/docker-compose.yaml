@@ -1,11 +1,12 @@
 services:
   mysql-node1:
-    image: mysql:8.0
+    build: .
     container_name: mysql-node1
     hostname: mysql-node1
     ports: ["3306:3306"]
     environment:
       MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_ROOT_HOST: "%"
     command: [
       "mysqld", 
       "--server-id=1", 
@@ -13,7 +14,6 @@ services:
       "--loose-group_replication_local_address=mysql-node1:33061"
     ]
     volumes:
-      - ./my.cnf:/etc/mysql/my.cnf
       - node1_data:/var/lib/mysql
     networks:
       - group-net
@@ -23,12 +23,13 @@ services:
       retries: 20
 
   mysql-node2:
-    image: mysql:8.0
+    build: .
     container_name: mysql-node2
     hostname: mysql-node2
     ports: ["3307:3306"]
     environment:
       MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_ROOT_HOST: "%"
     command: [
       "mysqld", 
       "--server-id=2", 
@@ -36,19 +37,19 @@ services:
       "--loose-group_replication_local_address=mysql-node2:33061"
     ]
     volumes:
-      - ./my.cnf:/etc/mysql/my.cnf
       - node2_data:/var/lib/mysql
     networks:
       - group-net
     depends_on: [mysql-node1]
 
   mysql-node3:
-    image: mysql:8.0
+    build: .
     container_name: mysql-node3
     hostname: mysql-node3
     ports: ["3308:3306"]
     environment:
       MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_ROOT_HOST: "%"
     command: [
       "mysqld", 
       "--server-id=3", 
@@ -56,7 +57,6 @@ services:
       "--loose-group_replication_local_address=mysql-node3:33061"
     ]
     volumes:
-      - ./my.cnf:/etc/mysql/my.cnf
       - node3_data:/var/lib/mysql
     networks:
       - group-net
