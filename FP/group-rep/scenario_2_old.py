@@ -2,7 +2,7 @@ import sys
 import time
 
 import mysql.connector
-from mysql.connector import errors
+from mysql.connector import errorcode, errors
 
 DB_CONFIG = {
     "user": "root",
@@ -29,82 +29,39 @@ def get_connection(node, timeout=1):
     )
 
 
-def get_cluster_view(conn):
-    """
-    Return:
-      - online_members: int
-      - self_role: 'PRIMARY'/'SECONDARY'/None
-      - self_state: 'ONLINE'/.../None
-      - ro, sro: read-only flags
-    """
-    cur = conn.cursor(dictionary=True)
-
-    cur.execute(
-        """
-        SELECT COUNT(*) AS online_members
-        FROM performance_schema.replication_group_members
-        WHERE MEMBER_STATE='ONLINE'
-        """
-    )
-    online_members = cur.fetchone()["online_members"]
-
-    # Identify this node inside the group by matching MEMBER_HOST
-    cur.execute("SELECT @@hostname AS hn")
-    hn = cur.fetchone()["hn"]
-
-    cur.execute(
-        """
-        SELECT MEMBER_ROLE, MEMBER_STATE
-        FROM performance_schema.replication_group_members
-        WHERE MEMBER_HOST = %s
-        """,
-        (hn,),
-    )
-    row = cur.fetchone()
-    self_role = row["MEMBER_ROLE"] if row else None
-    self_state = row["MEMBER_STATE"] if row else None
-
-    cur.execute("SELECT @@read_only AS ro, @@super_read_only AS sro")
-    flags = cur.fetchone()
-    ro, sro = flags["ro"], flags["sro"]
-
-    cur.close()
-    return online_members, self_role, self_state, ro, sro
-
-
-def is_safe_primary(conn):
-    """
-    Client-side policy (fencing):
-    - Must have at least 2 ONLINE members (avoid group-of-one writes)
-    - This node must be ONLINE PRIMARY
-    - Must be writable (ro=0, sro=0)
-    """
-    online_members, role, state, ro, sro = get_cluster_view(conn)
-    return (
-        online_members >= 2
-        and role == "PRIMARY"
-        and state == "ONLINE"
-        and ro == 0
-        and sro == 0
-    )
-
-
 def find_initial_primary():
-    print("[INFO] Mencari Primary Node (dengan quorum >= 2)...")
+    print("[INFO] Mencari Primary Node...")
     for node in NODES:
         try:
             conn = get_connection(node)
-            if is_safe_primary(conn):
-                conn.close()
-                return node
+            cur = conn.cursor(dictionary=True)
+
+            cur.execute(
+                """
+                SELECT MEMBER_HOST, MEMBER_ROLE
+                FROM performance_schema.replication_group_members
+                WHERE MEMBER_ROLE='PRIMARY' AND MEMBER_STATE='ONLINE'
+            """
+            )
+            row = cur.fetchone()
+
+            cur.execute("SELECT @@read_only AS ro")
+            ro = cur.fetchone()["ro"]
+
+            cur.close()
             conn.close()
-        except Exception:
+
+            if row and ro == 0:
+                return node
+        except:
             continue
+
     return None
 
 
 def check_data_consistency(current_idx):
     out = []
+
     for node in NODES:
         try:
             conn = get_connection(node, timeout=0.5)
@@ -116,7 +73,8 @@ def check_data_consistency(current_idx):
 
             status = "OK" if count >= current_idx else "LAGGING"
             out.append(f"{node['name']}: {count} ({status})")
-        except Exception:
+
+        except:
             out.append(f"{node['name']}: [UNREACHABLE]")
 
     print("   [SYNC CHECK] | " + " | ".join(out))
@@ -125,14 +83,15 @@ def check_data_consistency(current_idx):
 def run_continuous_failover_test():
     current_node = find_initial_primary()
     if not current_node:
-        print("[FATAL] Tidak ada PRIMARY yang aman (quorum >= 2).")
+        print("[FATAL] Cluster Down / Tidak ada Primary.")
         sys.exit(1)
 
-    print(f"[INFO] Primary awal (aman): {current_node['name']}")
+    print(f"[INFO] Primary awal: {current_node['name']}")
 
     try:
         conn = get_connection(current_node)
         cur = conn.cursor()
+
         cur.execute("CREATE DATABASE IF NOT EXISTS app_db")
         cur.execute("DROP TABLE IF EXISTS app_db.failover_bench")
         cur.execute(
@@ -141,8 +100,9 @@ def run_continuous_failover_test():
                 id INT PRIMARY KEY,
                 ts TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-            """
+        """
         )
+
         cur.close()
     except Exception as e:
         print(f"[ERROR] Setup DB gagal: {e}")
@@ -151,14 +111,10 @@ def run_continuous_failover_test():
     idx = 1
 
     print("\n--- MULAI PENGUJIAN ---")
-    print("Failover test. Jika tinggal 1 node (group-of-one), client akan MENOLAK write.\n")
+    print("Coba docker stop / disconnect salah satu node untuk trigger failover.\n")
 
     while True:
         try:
-            # fencing check before every write
-            if not is_safe_primary(conn):
-                raise RuntimeError("Quorum tidak aman / bukan PRIMARY yang valid (menolak write).")
-
             cur = conn.cursor()
             cur.execute("INSERT INTO app_db.failover_bench (id) VALUES (%s)", (idx,))
             cur.close()
@@ -169,15 +125,12 @@ def run_continuous_failover_test():
             idx += 1
             time.sleep(0.7)
 
-        except (errors.OperationalError, errors.InterfaceError, RuntimeError) as err:
-            print(f"\n[FAILOVER] Write gagal pada {current_node['name']}")
+        except (errors.OperationalError, errors.InterfaceError) as err:
+            print(f"\n[FAILOVER] Lost connection ke {current_node['name']}!")
             print(f"[ERR] {err}")
 
             failover_start = time.time()
-            try:
-                conn.close()
-            except Exception:
-                pass
+            conn.close()
 
             new_conn = None
 
@@ -185,14 +138,12 @@ def run_continuous_failover_test():
                 for node in NODES:
                     try:
                         tmp = get_connection(node, timeout=1)
-
-                        # only accept node if it's a safe primary (quorum >= 2)
-                        if not is_safe_primary(tmp):
-                            tmp.close()
-                            continue
-
                         cur = tmp.cursor()
-                        cur.execute("INSERT INTO app_db.failover_bench (id) VALUES (%s)", (idx,))
+
+                        cur.execute(
+                            "INSERT INTO app_db.failover_bench (id) VALUES (%s)",
+                            (idx,),
+                        )
                         cur.close()
 
                         failover_end = time.time()
@@ -200,14 +151,14 @@ def run_continuous_failover_test():
                         current_node = node
 
                         print("\n[RECOVERED] Failover selesai.")
-                        print(f"Primary baru (aman): {node['name']}")
+                        print(f"Primary baru: {node['name']}")
                         print(f"Downtime: {failover_end - failover_start:.4f} detik")
 
                         check_data_consistency(idx)
                         idx += 1
                         break
 
-                    except Exception:
+                    except:
                         pass
 
                 if new_conn is None:
