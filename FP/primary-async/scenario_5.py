@@ -17,12 +17,12 @@ NODES = {
     "Replica_2": {"host": "127.0.0.1", "port": 3308},
 }
 
-TOTAL_ROWS = 2000
-BURST_SIZE = 200
-THROTTLE_THRESHOLD = 0.035  # seconds
-RELAX_THRESHOLD = THROTTLE_THRESHOLD / 2
-THROTTLE_STEP = 0.05  # seconds
-MAX_THROTTLE_SLEEP = 0.5  # seconds
+TOTAL_ROWS = 3000
+BURST_SIZE = 400
+THROTTLE_THRESHOLD = 0.008
+RELAX_THRESHOLD = 0.004
+THROTTLE_STEP = 0.05  
+MAX_THROTTLE_SLEEP = 0.5  
 TABLE_NAME = "burst_throttle"
 
 
@@ -76,7 +76,18 @@ def check_replica(cursor, conn, node_name, target_id, write_time):
             return 5.0
 
 
-def write_burst(conn_primary, cur_primary, cur_r1, cur_r2, start_id, end_id, batch, executor):
+def write_burst(
+    conn_primary,
+    cur_primary,
+    conn_r1,
+    cur_r1,
+    conn_r2,
+    cur_r2,
+    start_id,
+    end_id,
+    batch,
+    executor,
+):
     batch_lags_r1 = []
     batch_lags_r2 = []
 
@@ -150,11 +161,14 @@ def run_scenario():
     for batch_idx in range(total_batches):
         start_id = batch_idx * BURST_SIZE + 1
         end_id = min(start_id + BURST_SIZE - 1, TOTAL_ROWS)
+        rows_in_batch = end_id - start_id + 1
 
         batch_lags_r1, batch_lags_r2 = write_burst(
             conn_primary,
             cur_primary,
+            conn_r1,
             cur_r1,
+            conn_r2,
             cur_r2,
             start_id,
             end_id,
@@ -181,7 +195,7 @@ def run_scenario():
         throttle_history.append(new_delay)
 
         print(
-            f"{batch_idx + 1:<6} | {end_id - start_id + 1:<6} | "
+            f"{batch_idx + 1:<6} | {rows_in_batch:<6} | "
             f"{avg_r1:.6f}    | {avg_r2:.6f}    | {action:<13} | {new_delay:.3f}"
         )
 
